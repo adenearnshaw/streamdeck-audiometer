@@ -1,4 +1,4 @@
-﻿using AudioMeter.Wrappers;
+using AudioMeter.Wrappers;
 using BarRaider.SdTools;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
@@ -95,10 +95,14 @@ namespace AudioMeter.Actions
         private const string MID_COLOR_DEFAULT = "#FFFF00";
         private const string PEAK_COLOR_DEFAULT = "#FF0000";
         private const string BACKGROUND_COLOR_DEFAULT = "#000000";
+        private const string DEFAULT_INPUT_DEVICE_NAME = "Default Input";
+        private const string DEFAULT_OUTPUT_DEVICE_NAME = "Default Output";
 
         private readonly PluginSettings settings;
         private readonly System.Timers.Timer tmrGetAudioLevel = new System.Timers.Timer();
         private MMDevice mmDevice = null;
+        private MMDeviceEnumerator deviceEnumerator = new MMDeviceEnumerator();
+        private DefaultDeviceNotificationClient defaultDeviceNotificationClient = new DefaultDeviceNotificationClient();
         private int midLevel;
         private int peakLevel;
         private int maxThreshold;
@@ -118,6 +122,9 @@ namespace AudioMeter.Actions
             tmrGetAudioLevel.Interval = 200;
             tmrGetAudioLevel.Elapsed += TmrGetAudioLevel_Elapsed;
 
+            defaultDeviceNotificationClient.DefaultDeviceChanged += OnDefaultDeviceChanged;
+            deviceEnumerator.RegisterEndpointNotificationCallback(defaultDeviceNotificationClient);
+
             #pragma warning disable 4014
             InitializeSettings();
             #pragma warning restore 4014
@@ -125,6 +132,8 @@ namespace AudioMeter.Actions
 
         public override void Dispose()
         {
+            deviceEnumerator.UnregisterEndpointNotificationCallback(defaultDeviceNotificationClient);
+            defaultDeviceNotificationClient.DefaultDeviceChanged -= OnDefaultDeviceChanged;
             Logger.Instance.LogMessage(TracingLevel.INFO, $"Destructor called");
         }
 
@@ -226,14 +235,16 @@ namespace AudioMeter.Actions
 
         private Task PropagatePlaybackDevices()
         {
-            return Task.Run(async ()  =>
+            return Task.Run(async () =>
             {
                 settings.AudioDevices = new List<AudioDevice>();
 
                 try
                 {
-                    MMDeviceEnumerator enumerator = new MMDeviceEnumerator();
-                    var devices = enumerator.EnumerateAudioEndPoints(DataFlow.All, DeviceState.Active).ToList().OrderBy(d => d.FriendlyName);
+                    settings.AudioDevices.Add(new AudioDevice() { ProductName = DEFAULT_INPUT_DEVICE_NAME });
+                    settings.AudioDevices.Add(new AudioDevice() { ProductName = DEFAULT_OUTPUT_DEVICE_NAME });
+
+                    var devices = deviceEnumerator.EnumerateAudioEndPoints(DataFlow.All, DeviceState.Active).ToList().OrderBy(d => d.FriendlyName);
                     foreach (var device in devices)
                     {
                         settings.AudioDevices.Add(new AudioDevice() { ProductName = device.FriendlyName });
@@ -281,8 +292,19 @@ namespace AudioMeter.Actions
                 return;
             }
 
-            MMDeviceEnumerator enumerator = new MMDeviceEnumerator();
-            mmDevice = enumerator.EnumerateAudioEndPoints(DataFlow.All, DeviceState.Active).ToList().Where(d => d.FriendlyName == deviceName).FirstOrDefault();
+            if (String.Equals(DEFAULT_INPUT_DEVICE_NAME, deviceName, StringComparison.OrdinalIgnoreCase))
+            {
+                mmDevice = deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Console);
+                return;
+        }
+
+            if (String.Equals(DEFAULT_OUTPUT_DEVICE_NAME, deviceName, StringComparison.OrdinalIgnoreCase))
+            {
+                mmDevice = deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Console);
+                return;
+            }
+
+            mmDevice = deviceEnumerator.EnumerateAudioEndPoints(DataFlow.All, DeviceState.Active).ToList().Where(d => d.FriendlyName == deviceName).FirstOrDefault();
         }
 
         private async Task DisplayMeter(int level)
@@ -381,6 +403,37 @@ namespace AudioMeter.Actions
             return meterBrush;
         }
 
+        private void OnDefaultDeviceChanged(object sender, EventArgs e)
+        {
+            SetMMDeviceFromDeviceName(settings.AudioDevice);
+        }
+
         #endregion
+
+        private class DefaultDeviceNotificationClient : IMMNotificationClient
+        {
+            public event EventHandler DefaultDeviceChanged;
+
+            public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
+            {
+                DefaultDeviceChanged?.Invoke(this, EventArgs.Empty);
+            }
+
+            public void OnDeviceAdded(string pwstrDeviceId)
+            {
+            }
+
+            public void OnDeviceRemoved(string deviceId)
+            {
+            }
+
+            public void OnDeviceStateChanged(string deviceId, DeviceState newState)
+            {
+            }
+
+            public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key)
+            {   
+            }
+        }
     }
 }
